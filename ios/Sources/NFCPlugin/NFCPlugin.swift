@@ -10,6 +10,7 @@ public class NFCPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "isSupported", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "cancelWriteAndroid", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "startScan", returnType: CAPPluginReturnPromise),
+    CAPPluginMethod(name: "cancelScan", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "writeNDEF", returnType: CAPPluginReturnPromise)
     ]
 
@@ -26,24 +27,45 @@ public class NFCPlugin: CAPPlugin, CAPBridgedPlugin {
 
     @objc func startScan(_ call: CAPPluginCall) {
         print("startScan called")
-        reader.onNDEFMessageReceived = { messages in
+        reader.onNDEFMessageReceived = { messages, tagInfo in
             var ndefMessages = [[String: Any]]()
-            for message in messages {
-                var records = [[String: Any]]()
-                for record in message.records {
-                    let recordType = String(data: record.type, encoding: .utf8) ?? ""
-                    let payloadData = record.payload.base64EncodedString()
-                    
-                    records.append([
-                        "type": recordType,
+            
+            if messages.isEmpty {
+                // If no NDEF messages but we have tag info, create a fallback record with the UID
+                if let tagInfo = tagInfo, let uid = tagInfo["uid"] as? String {
+                    let payloadData = uid.data(using: .utf8)?.base64EncodedString() ?? ""
+                    let records = [[
+                        "type": "ID",
                         "payload": payloadData
+                    ]]
+                    ndefMessages.append([
+                        "records": records
                     ])
                 }
-                ndefMessages.append([
-                    "records": records
-                ])
+            } else {
+                for message in messages {
+                    var records = [[String: Any]]()
+                    for record in message.records {
+                        let recordType = String(data: record.type, encoding: .utf8) ?? ""
+                        let payloadData = record.payload.base64EncodedString()
+                        
+                        records.append([
+                            "type": recordType,
+                            "payload": payloadData
+                        ])
+                    }
+                    ndefMessages.append([
+                        "records": records
+                    ])
+                }
             }
-            self.notifyListeners("nfcTag", data: ["messages": ndefMessages])
+            
+            var response: [String: Any] = ["messages": ndefMessages]
+            if let tagInfo = tagInfo {
+                response["tagInfo"] = tagInfo
+            }
+            
+            self.notifyListeners("nfcTag", data: response)
         }
 
         reader.onError = { error in
@@ -55,6 +77,11 @@ public class NFCPlugin: CAPPlugin, CAPBridgedPlugin {
         }
 
         reader.startScanning()
+        call.resolve()
+    }
+
+    @objc func cancelScan(_ call: CAPPluginCall) {
+        reader.cancelScanning()
         call.resolve()
     }
 

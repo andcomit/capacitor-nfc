@@ -9,6 +9,10 @@ export interface NFCPluginBasic {
     }>;
     startScan(): Promise<void>;
     /**
+     * Cancels an ongoing scan session (iOS only currently; no-op / rejection on Android).
+     */
+    cancelScan(): Promise<void>;
+    /**
      * Writes an NDEF message to an NFC tag.
      * @param options The NDEF message to write.
      */
@@ -43,9 +47,32 @@ export interface NFCPluginBasic {
 }
 export interface NDEFMessages<T extends PayloadType = string> {
     messages: NDEFMessage<T>[];
+    tagInfo?: TagInfo;
 }
 export interface NDEFMessage<T extends PayloadType = string> {
     records: NDEFRecord<T>[];
+}
+export interface TagInfo {
+    /**
+     * The unique identifier of the tag (UID) as a hex string
+     */
+    uid: string;
+    /**
+     * The NFC tag technology types supported
+     */
+    techTypes: string[];
+    /**
+     * The maximum size of NDEF message that can be written to this tag (if applicable)
+     */
+    maxSize?: number;
+    /**
+     * Whether the tag is writable
+     */
+    isWritable?: boolean;
+    /**
+     * The tag type (e.g., "ISO14443-4", "MifareClassic", etc.)
+     */
+    type?: string;
 }
 export interface NDEFRecord<T extends PayloadType = string> {
     /**
@@ -73,10 +100,19 @@ export declare type NDEFMessagesTransformable = {
     numberArray: () => NDEFMessages<number[]>;
 };
 export declare type TagResultListenerFunc = (data: NDEFMessagesTransformable) => void;
-export interface NFCPlugin extends Omit<NFCPluginBasic, "writeNDEF" | "addListener"> {
+export interface NFCPlugin extends Omit<NFCPluginBasic, 'writeNDEF' | 'addListener'> {
     writeNDEF: <T extends PayloadType = Uint8Array>(record?: NDEFWriteOptions<T>) => Promise<void>;
     wrapperListeners: TagResultListenerFunc[];
-    onRead: (listenerFunc: TagResultListenerFunc) => void;
-    onWrite: (listenerFunc: () => void) => void;
-    onError: (listenerFunc: (error: NFCError) => void) => void;
+    /**
+     * Register a read listener. Returns an unsubscribe function to remove just this listener.
+     */
+    onRead: (listenerFunc: TagResultListenerFunc) => () => void;
+    /**
+     * Register a write success listener. Returns an unsubscribe function.
+     */
+    onWrite: (listenerFunc: () => void) => () => void;
+    /**
+     * Register an error listener. Returns an unsubscribe function.
+     */
+    onError: (listenerFunc: (error: NFCError) => void) => () => void;
 }
