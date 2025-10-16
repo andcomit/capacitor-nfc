@@ -57,7 +57,6 @@ class NFCPlugin : Plugin() {
         NfcV::class.java.name
     ))
 
-    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     public override fun handleOnNewIntent(intent: Intent?) {
         super.handleOnNewIntent(intent)
 
@@ -164,7 +163,6 @@ class NFCPlugin : Plugin() {
         )
     }
 
-    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private fun handleWriteTag(intent: Intent) {
         val records = recordsBuffer?.toList<JSONObject>()
         if(records != null) {
@@ -203,7 +201,13 @@ class NFCPlugin : Plugin() {
                 }
 
                 val ndefMessage = NdefMessage(ndefRecords.toTypedArray())
-                val tag = intent.getParcelableExtra(NfcAdapter.EXTRA_TAG, Tag::class.java)
+                val tag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                  intent.getParcelableExtra(NfcAdapter.EXTRA_TAG, Tag::class.java)
+                } else {
+                  @Suppress("DEPRECATION")
+                  intent.getParcelableExtra(NfcAdapter.EXTRA_TAG) as? Tag
+                }
+
                 var ndef = Ndef.get(tag)
 
                 if (ndef == null) {
@@ -310,7 +314,6 @@ class NFCPlugin : Plugin() {
         }
     }
 
-    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private fun handleReadTag(intent: Intent) {
         val jsResponse = JSObject()
         val ndefMessages = JSArray()
@@ -357,9 +360,14 @@ class NFCPlugin : Plugin() {
                 if (!added) {
                     val tagId = intent.getByteArrayExtra(NfcAdapter.EXTRA_ID) ?: tag.id
                     val result = if (tagId != null) byteArrayToHexString(tagId) else ""
+                    val encoded = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        java.util.Base64.getEncoder().encodeToString(result.toByteArray())
+                    } else {
+                        android.util.Base64.encodeToString(result.toByteArray(), android.util.Base64.NO_WRAP)
+                    }
                     val rec = JSObject()
                     rec.put("type", "ID")
-                    rec.put("payload", Base64.getEncoder().encodeToString(result.toByteArray()))
+                    rec.put("payload", encoded)
                     val ndefRecords = JSArray().apply { put(rec) }
                     val msg = JSObject().apply { put("records", ndefRecords) }
                     ndefMessages.put(msg)
@@ -377,18 +385,18 @@ class NFCPlugin : Plugin() {
 
     private fun extractTagInfo(tag: Tag): JSObject {
         val tagInfo = JSObject()
-        
+
         // Always include UID
         val uid = byteArrayToHexString(tag.id)
         tagInfo.put("uid", uid)
-        
+
         // Include technology types
         val techTypes = JSArray()
         for (tech in tag.techList) {
             techTypes.put(tech)
         }
         tagInfo.put("techTypes", techTypes)
-        
+
         // Try to get NDEF-specific information
         val ndef = Ndef.get(tag)
         if (ndef != null) {
@@ -403,16 +411,21 @@ class NFCPlugin : Plugin() {
                 try { ndef.close() } catch (_: Exception) {}
             }
         }
-        
+
         return tagInfo
     }
 
     private fun ndefMessageToJS(message: NdefMessage): JSObject {
         val ndefRecords = JSArray()
         for (record in message.records) {
+            val encoded = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                java.util.Base64.getEncoder().encodeToString(record.payload)
+            } else {
+                android.util.Base64.encodeToString(record.payload, android.util.Base64.NO_WRAP)
+            }
             val rec = JSObject()
             rec.put("type", String(record.type, Charsets.UTF_8))
-            rec.put("payload", Base64.getEncoder().encodeToString(record.payload))
+            rec.put("payload", encoded)
             ndefRecords.put(rec)
         }
         val msg = JSObject()
