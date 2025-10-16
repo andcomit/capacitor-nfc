@@ -328,10 +328,12 @@ class NFCPlugin : Plugin() {
         val tagInfo = tag?.let { extractTagInfo(it) }
 
         // Try to obtain raw NDEF messages first (ACTION_NDEF_DISCOVERED path)
-        val receivedMessages = intent.getParcelableArrayExtra(
-            EXTRA_NDEF_MESSAGES,
-            NdefMessage::class.java
-        )
+        val receivedMessages: Array<NdefMessage>? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+          intent.getParcelableArrayExtra(EXTRA_NDEF_MESSAGES, NdefMessage::class.java)
+        } else {
+          @Suppress("DEPRECATION")
+          intent.getParcelableArrayExtra(EXTRA_NDEF_MESSAGES) as? Array<NdefMessage>
+        }
 
         if (receivedMessages != null && receivedMessages.isNotEmpty()) {
             // Standard NDEF-discovered path
