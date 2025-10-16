@@ -319,7 +319,12 @@ class NFCPlugin : Plugin() {
         val ndefMessages = JSArray()
 
         // Get tag information regardless of NDEF content
-        val tag: Tag? = intent.getParcelableExtra(NfcAdapter.EXTRA_TAG, Tag::class.java)
+        val tag: Tag? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+          intent.getParcelableExtra(NfcAdapter.EXTRA_TAG, Tag::class.java)
+        } else {
+          @Suppress("DEPRECATION")
+          intent.getParcelableExtra(NfcAdapter.EXTRA_TAG) as? Tag
+        }
         val tagInfo = tag?.let { extractTagInfo(it) }
 
         // Try to obtain raw NDEF messages first (ACTION_NDEF_DISCOVERED path)
