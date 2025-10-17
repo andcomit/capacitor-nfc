@@ -29,7 +29,7 @@ public class NFCPlugin: CAPPlugin, CAPBridgedPlugin {
         print("startScan called")
         reader.onNDEFMessageReceived = { messages, tagInfo in
             var ndefMessages = [[String: Any]]()
-            
+
             if messages.isEmpty {
                 // If no NDEF messages but we have tag info, create a fallback record with the UID
                 if let tagInfo = tagInfo, let uid = tagInfo["uid"] as? String {
@@ -48,7 +48,7 @@ public class NFCPlugin: CAPPlugin, CAPBridgedPlugin {
                     for record in message.records {
                         let recordType = String(data: record.type, encoding: .utf8) ?? ""
                         let payloadData = record.payload.base64EncodedString()
-                        
+
                         records.append([
                             "type": recordType,
                             "payload": payloadData
@@ -59,13 +59,28 @@ public class NFCPlugin: CAPPlugin, CAPBridgedPlugin {
                     ])
                 }
             }
-            
+
             var response: [String: Any] = ["messages": ndefMessages]
             if let tagInfo = tagInfo {
                 response["tagInfo"] = tagInfo
             }
-            
+
             self.notifyListeners("nfcTag", data: response)
+        }
+
+        reader.onUIDReceived = { uid, type in
+          let payloadData = uid.data(using: .utf8)?.base64EncodedString() ?? ""
+          let record = [
+              "type": "ID",
+              "payload": payloadData
+          ]
+
+          let response: [String: Any] = [
+              "messages": [["records": [record]]],
+              "tagInfo": ["uid": uid, "type": type]
+          ]
+
+          self.notifyListeners("nfcTag", data: response)
         }
 
         reader.onError = { error in
@@ -102,12 +117,12 @@ public class NFCPlugin: CAPPlugin, CAPBridgedPlugin {
                 print("Skipping record due to missing or invalid record")
                 continue
             }
-            
+
             guard let payloadArray = payload as [NSNumber]? else {
                 print("Skipping record due to missing or invalid 'payload' (expected array of numbers)")
                 continue
             }
-            
+
             var payloadBytes = [UInt8]()
             for number in payloadArray {
                 payloadBytes.append(number.uint8Value)
