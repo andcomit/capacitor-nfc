@@ -65,7 +65,7 @@ import CoreNFC
             self.tryReadNDEF(tag: tag, session: session, tagInfo: tagInfo) { success in
               if !success {
                 // NDEF non rilevato ritorno UID
-                session.alertMessage ="Tag detected"
+                session.alertMessage = "Tag detected"
                 session.invalidate()
                 self.onUIDReceived?(uid, type)
               }
