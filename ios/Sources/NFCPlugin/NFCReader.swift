@@ -4,13 +4,14 @@ import CoreNFC
 @objc public class NFCReader: NSObject, NFCTagReaderSessionDelegate {
     private var readerSession: NFCTagReaderSession?
 
+    public var onUIDReceived: ((String, String) -> Void)?
     public var onNDEFMessageReceived: (([NFCNDEFMessage], [String: Any]?) -> Void)?
     public var onError: ((Error) -> Void)?
 
     @objc public func startScanning() {
         print("NFCReader startScanning called")
 
-        guard NFCNDEFReaderSession.readingAvailable else {
+        guard NFCTagReaderSession.readingAvailable else {
             print("NFC scanning not supported on this device")
             return
         }
@@ -28,15 +29,18 @@ import CoreNFC
 
     // NFCTagReaderSessionDelegate methods
     public func tagReaderSessionDidBecomeActive(_ session: NFCTagReaderSession) {
-        
+      print("NFC session active")
     }
 
     public func tagReaderSession(_ session: NFCTagReaderSession, didInvalidateWithError error: Error) {
         print("NFC reader session error: \(error.localizedDescription)")
         onError?(error)
+        readerSession = nil
     }
 
     public func tagReaderSession(_ session: NFCTagReaderSession, didDetect tags: [NFCTag]) {
+        guard let tag = tags.first else { return }
+
         if tags.count > 1 {
             let retryInterval = DispatchTimeInterval.milliseconds(500)
             session.alertMessage = "More than one tag detected. Please remove extra tags and try again."
@@ -45,192 +49,101 @@ import CoreNFC
             }
             return
         }
-        
-        let tag = tags.first!
+
         session.connect(to: tag) { (error: Error?) in
             if let error = error {
                 session.invalidate(errorMessage: "Unable to connect to tag.")
                 self.onError?(error)
                 return
             }
-            
+
             // Extract tag information
             let tagInfo = self.extractTagInfo(from: tag)
-            
-            // Try to read NDEF if the tag supports it
-            if case let .iso7816(iso7816Tag) = tag {
-                self.handleISO7816Tag(iso7816Tag, session: session, tagInfo: tagInfo)
-            } else if case let .miFare(miFareTag) = tag {
-                self.handleMiFareTag(miFareTag, session: session, tagInfo: tagInfo)
-            } else if case let .feliCa(feliCaTag) = tag {
-                self.handleFeliCaTag(feliCaTag, session: session, tagInfo: tagInfo)
-            } else if case let .iso15693(iso15693Tag) = tag {
-                self.handleISO15693Tag(iso15693Tag, session: session, tagInfo: tagInfo)
-            } else {
-                // Unknown tag type, still return tag info
-                session.alertMessage = "Tag detected but no NDEF message found."
+            let uid = (tagInfo["uid"] as? String) ?? ""
+            let type = (tagInfo["type"] as? String) ?? "Unknown"
+
+            self.tryReadNDEF(tag: tag, session: session, tagInfo: tagInfo) { success in
+              if !success {
+                // NDEF non rilevato ritorno UID
+                session.alertMessage ="Tag detected"
                 session.invalidate()
-                self.onNDEFMessageReceived?([], tagInfo)
+                self.onUIDReceived?(uid, type)
+              }
             }
+
         }
     }
-    
+
     private func extractTagInfo(from tag: NFCTag) -> [String: Any] {
         var tagInfo: [String: Any] = [:]
-        var techTypes: [String] = []
-        var uid: String = ""
-        
+        var uid = ""
+        var type = "Unknown"
+
         switch tag {
-        case .iso7816(let iso7816Tag):
-            uid = iso7816Tag.identifier.map { String(format: "%02X", $0) }.joined()
-            techTypes.append("ISO7816")
-            tagInfo["type"] = "ISO7816"
-            
-        case .miFare(let miFareTag):
-            uid = miFareTag.identifier.map { String(format: "%02X", $0) }.joined()
-            techTypes.append("MiFare")
-            tagInfo["type"] = "MiFare"
-            
-        case .feliCa(let feliCaTag):
-            uid = feliCaTag.currentIDm.map { String(format: "%02X", $0) }.joined()
-            techTypes.append("FeliCa")
-            tagInfo["type"] = "FeliCa"
-            
-        case .iso15693(let iso15693Tag):
-            uid = iso15693Tag.identifier.map { String(format: "%02X", $0) }.joined()
-            techTypes.append("ISO15693")
-            tagInfo["type"] = "ISO15693"
-            
+        case .iso7816(let t):
+            uid = t.identifier.map { String(format: "%02X", $0) }.joined()
+            type = "ISO7816"
+        case .miFare(let t):
+            uid = t.identifier.map { String(format: "%02X", $0) }.joined()
+            type = "MiFare"
+        case .feliCa(let t):
+            uid = t.currentIDm.map { String(format: "%02X", $0) }.joined()
+            type = "FeliCa"
+        case .iso15693(let t):
+            uid = t.identifier.map { String(format: "%02X", $0) }.joined()
+            type = "ISO15693"
         @unknown default:
-            techTypes.append("Unknown")
-            tagInfo["type"] = "Unknown"
+            type = "Unknown"
         }
-        
+
         tagInfo["uid"] = uid
-        tagInfo["techTypes"] = techTypes
-        
+        tagInfo["type"] = type
         return tagInfo
     }
-    
-    private func handleMiFareTag(_ miFareTag: NFCMiFareTag, session: NFCTagReaderSession, tagInfo: [String: Any]) {
-        miFareTag.queryNDEFStatus { (ndefStatus: NFCNDEFStatus, capacity: Int, error: Error?) in
-            if let error = error {
-                session.invalidate(errorMessage: "Unable to query NDEF status of tag.")
-                self.onError?(error)
-                return
-            }
-            
-            if ndefStatus == .notSupported {
-                session.alertMessage = "Tag detected but no NDEF message found."
-                session.invalidate()
-                self.onNDEFMessageReceived?([], tagInfo)
-                return
-            }
-            
-            var updatedTagInfo = tagInfo
-            updatedTagInfo["maxSize"] = capacity
-            updatedTagInfo["isWritable"] = ndefStatus == .readWrite
-            
-            miFareTag.readNDEF { (message: NFCNDEFMessage?, error: Error?) in
-                if let error = error {
-                    session.invalidate(errorMessage: "Failed to read NDEF from tag.")
-                    self.onError?(error)
-                    return
-                }
-                
-                if let message = message {
-                    session.alertMessage = "Found 1 NDEF message."
-                    session.invalidate()
-                    self.onNDEFMessageReceived?([message], updatedTagInfo)
-                } else {
-                    session.alertMessage = "Tag detected but no NDEF message found."
-                    session.invalidate()
-                    self.onNDEFMessageReceived?([], updatedTagInfo)
-                }
-            }
+
+    private func tryReadNDEF(tag: NFCTag, session: NFCTagReaderSession, tagInfo: [String: Any], completion: @escaping (Bool) -> Void) {
+        // Gestione universale NDEF
+        switch tag {
+        case .miFare(let miFareTag):
+            readNDEF(from: miFareTag, session: session, tagInfo: tagInfo, completion: completion)
+        case .iso15693(let iso15693Tag):
+            readNDEF(from: iso15693Tag, session: session, tagInfo: tagInfo, completion: completion)
+        case .feliCa(let feliCaTag):
+            readNDEF(from: feliCaTag, session: session, tagInfo: tagInfo, completion: completion)
+        default:
+            completion(false)
         }
     }
-    
-    private func handleISO7816Tag(_ iso7816Tag: NFCISO7816Tag, session: NFCTagReaderSession, tagInfo: [String: Any]) {
-        // ISO7816 tags don't typically support NDEF directly
-        session.alertMessage = "Tag detected but no NDEF message found."
-        session.invalidate()
-        self.onNDEFMessageReceived?([], tagInfo)
-    }
-    
-    private func handleFeliCaTag(_ feliCaTag: NFCFeliCaTag, session: NFCTagReaderSession, tagInfo: [String: Any]) {
-        feliCaTag.queryNDEFStatus { (ndefStatus: NFCNDEFStatus, capacity: Int, error: Error?) in
+
+    private func readNDEF(from tag: NFCNDEFTag, session: NFCTagReaderSession, tagInfo: [String: Any], completion: @escaping (Bool) -> Void) {
+        tag.queryNDEFStatus { status, capacity, error in
             if let error = error {
-                session.invalidate(errorMessage: "Unable to query NDEF status of tag.")
-                self.onError?(error)
+                print("Error querying NDEF status: \(error.localizedDescription)")
+                completion(false)
                 return
             }
-            
-            if ndefStatus == .notSupported {
-                session.alertMessage = "Tag detected but no NDEF message found."
-                session.invalidate()
-                self.onNDEFMessageReceived?([], tagInfo)
+
+            guard status != .notSupported else {
+                completion(false)
                 return
             }
-            
-            var updatedTagInfo = tagInfo
-            updatedTagInfo["maxSize"] = capacity
-            updatedTagInfo["isWritable"] = ndefStatus == .readWrite
-            
-            feliCaTag.readNDEF { (message: NFCNDEFMessage?, error: Error?) in
+
+            tag.readNDEF { message, error in
                 if let error = error {
-                    session.invalidate(errorMessage: "Failed to read NDEF from tag.")
-                    self.onError?(error)
+                    print("Error reading NDEF: \(error.localizedDescription)")
+                    completion(false)
                     return
                 }
-                
+
                 if let message = message {
-                    session.alertMessage = "Found 1 NDEF message."
+                    var info = tagInfo
+                    info["capacity"] = capacity
+                    session.alertMessage = "NDEF message found."
                     session.invalidate()
-                    self.onNDEFMessageReceived?([message], updatedTagInfo)
+                    self.onNDEFMessageReceived?([message], info)
+                    completion(true)
                 } else {
-                    session.alertMessage = "Tag detected but no NDEF message found."
-                    session.invalidate()
-                    self.onNDEFMessageReceived?([], updatedTagInfo)
-                }
-            }
-        }
-    }
-    
-    private func handleISO15693Tag(_ iso15693Tag: NFCISO15693Tag, session: NFCTagReaderSession, tagInfo: [String: Any]) {
-        iso15693Tag.queryNDEFStatus { (ndefStatus: NFCNDEFStatus, capacity: Int, error: Error?) in
-            if let error = error {
-                session.invalidate(errorMessage: "Unable to query NDEF status of tag.")
-                self.onError?(error)
-                return
-            }
-            
-            if ndefStatus == .notSupported {
-                session.alertMessage = "Tag detected but no NDEF message found."
-                session.invalidate()
-                self.onNDEFMessageReceived?([], tagInfo)
-                return
-            }
-            
-            var updatedTagInfo = tagInfo
-            updatedTagInfo["maxSize"] = capacity
-            updatedTagInfo["isWritable"] = ndefStatus == .readWrite
-            
-            iso15693Tag.readNDEF { (message: NFCNDEFMessage?, error: Error?) in
-                if let error = error {
-                    session.invalidate(errorMessage: "Failed to read NDEF from tag.")
-                    self.onError?(error)
-                    return
-                }
-                
-                if let message = message {
-                    session.alertMessage = "Found 1 NDEF message."
-                    session.invalidate()
-                    self.onNDEFMessageReceived?([message], updatedTagInfo)
-                } else {
-                    session.alertMessage = "Tag detected but no NDEF message found."
-                    session.invalidate()
-                    self.onNDEFMessageReceived?([], updatedTagInfo)
+                    completion(false)
                 }
             }
         }
