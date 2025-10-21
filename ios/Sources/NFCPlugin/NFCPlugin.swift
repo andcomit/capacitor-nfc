@@ -15,9 +15,10 @@ public class NFCPlugin: CAPPlugin, CAPBridgedPlugin {
   ]
 
   private let reader = NFCReader()
+  private let writer = NFCWriter()
 
   @objc func isSupported(_ call: CAPPluginCall) {
-    call.resolve(["supported": NFCTagReaderSession.readingAvailable])
+    call.resolve(["supported": NFCNDEFReaderSession.readingAvailable])
   }
 
   @objc func cancelWriteAndroid(_ call: CAPPluginCall) {
@@ -25,8 +26,9 @@ public class NFCPlugin: CAPPlugin, CAPBridgedPlugin {
   }
 
   @objc func startScan(_ call: CAPPluginCall) {
-    print("📡 startScan (UID only)")
+    print("startScan called (UID mode)")
 
+    // CALLBACK → UID + tipo tag
     reader.onUIDReceived = { uid, type in
       let response: [String: Any] = [
         "uid": uid,
@@ -35,6 +37,7 @@ public class NFCPlugin: CAPPlugin, CAPBridgedPlugin {
       self.notifyListeners("nfcTag", data: response)
     }
 
+    // CALLBACK → errori
     reader.onError = { error in
       if let nfcError = error as? NFCReaderError,
         nfcError.code != .readerSessionInvalidationErrorUserCanceled
@@ -53,7 +56,58 @@ public class NFCPlugin: CAPPlugin, CAPBridgedPlugin {
   }
 
   @objc func writeNDEF(_ call: CAPPluginCall) {
-    // Lasciato per compatibilità futura se vuoi aggiungere scrittura
-    call.reject("Writing not supported in this UID-only implementation")
+    print("writeNDEF called")
+
+    guard let recordsData = call.getArray("records") as? [[String: Any]] else {
+      call.reject("Records are required")
+      return
+    }
+
+    var ndefRecords = [NFCNDEFPayload]()
+    for recordData in recordsData {
+      guard let type = recordData["type"] as? String,
+        let payload = recordData["payload"] as? [NSNumber],
+        let typeData = type.data(using: .utf8)
+      else {
+        print("Skipping record due to missing or invalid record")
+        continue
+      }
+
+      guard let payloadArray = payload as [NSNumber]? else {
+        print("Skipping record due to missing or invalid 'payload' (expected array of numbers)")
+        continue
+      }
+
+      var payloadBytes = [UInt8]()
+      for number in payloadArray {
+        payloadBytes.append(number.uint8Value)
+      }
+      let payloadData = Data(payloadBytes)
+
+      let ndefRecord = NFCNDEFPayload(
+        format: .nfcWellKnown,
+        type: typeData,
+        identifier: Data(),
+        payload: payloadData
+      )
+      ndefRecords.append(ndefRecord)
+    }
+
+    let ndefMessage = NFCNDEFMessage(records: ndefRecords)
+
+    writer.onWriteSuccess = {
+      self.notifyListeners("nfcWriteSuccess", data: ["success": true])
+    }
+
+    writer.onError = { error in
+      if let nfcError = error as? NFCReaderError {
+        if nfcError.code != .readerSessionInvalidationErrorUserCanceled {
+          self.notifyListeners("nfcError", data: ["error": nfcError.localizedDescription])
+        }
+      }
+    }
+
+    writer.startWriting(message: ndefMessage)
+    call.resolve()
   }
 }
