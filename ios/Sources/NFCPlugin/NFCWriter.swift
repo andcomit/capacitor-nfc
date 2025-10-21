@@ -1,89 +1,102 @@
-import Foundation
 import CoreNFC
+import Foundation
 
 @objc public class NFCWriter: NSObject, NFCNDEFReaderSessionDelegate {
-    private var writerSession: NFCNDEFReaderSession?
-    private var messageToWrite: NFCNDEFMessage?
+  private var writerSession: NFCNDEFReaderSession?
+  private var messageToWrite: NFCNDEFMessage?
 
-    public var onWriteSuccess: (() -> Void)?
-    public var onError: ((Error) -> Void)?
+  public var onWriteSuccess: (() -> Void)?
+  public var onError: ((Error) -> Void)?
 
-    @objc public func startWriting(message: NFCNDEFMessage) {
-        print("NFCWriter startWriting called")
-        self.messageToWrite = message
+  @objc public func startWriting(message: NFCNDEFMessage) {
+    print("✍️ NFCWriter startWriting called")
+    self.messageToWrite = message
 
-        guard NFCNDEFReaderSession.readingAvailable else {
-            print("NFC writing not supported on this device")
-            return
+    guard NFCNDEFReaderSession.readingAvailable else {
+      print("❌ NFC writing not supported on this device")
+      return
+    }
+
+    writerSession = NFCNDEFReaderSession(
+      delegate: self,
+      queue: nil,
+      invalidateAfterFirstRead: false
+    )
+
+    writerSession?.alertMessage = "Avvicina la parte superiore dell’iPhone al tag NFC per scrivere."
+    writerSession?.begin()
+  }
+
+  public func readerSessionDidBecomeActive(_ session: NFCNDEFReaderSession) {
+    print("NFC writer session active")
+  }
+
+  public func readerSession(_ session: NFCNDEFReaderSession, didInvalidateWithError error: Error) {
+    onError?(error)
+    writerSession = nil
+  }
+
+  // Non usata per scrittura ma deve essere implementata
+  public func readerSession(
+    _ session: NFCNDEFReaderSession, didDetectNDEFs messages: [NFCNDEFMessage]
+  ) {
+    // no-op
+  }
+
+  public func readerSession(_ session: NFCNDEFReaderSession, didDetect tags: [NFCNDEFTag]) {
+    if tags.count > 1 {
+      session.alertMessage = "Più di un tag rilevato. Rimuovi gli altri e riprova."
+      DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(500)) {
+        session.restartPolling()
+      }
+      return
+    }
+
+    guard let tag = tags.first else { return }
+
+    session.connect(to: tag) { error in
+      if let error = error {
+        session.invalidate(errorMessage: "Impossibile connettersi al tag.")
+        self.onError?(error)
+        return
+      }
+
+      tag.queryNDEFStatus { ndefStatus, capacity, error in
+        if let error = error {
+          session.invalidate(errorMessage: "Impossibile interrogare lo stato NDEF del tag.")
+          self.onError?(error)
+          return
         }
-        writerSession = NFCNDEFReaderSession(delegate: self, queue: nil, invalidateAfterFirstRead: false)
-        writerSession?.alertMessage = "Hold your iPhone near the NFC tag to write."
-        writerSession?.begin()
-    }
 
-    public func readerSession(_ session: NFCNDEFReaderSession, didDetectNDEFs messages: [NFCNDEFMessage]) {
-    }
+        switch ndefStatus {
+        case .notSupported:
+          session.invalidate(errorMessage: "Il tag non è compatibile con NDEF.")
 
-    // NFCNDEFReaderSessionDelegate methods for writing
-    public func readerSession(_ session: NFCNDEFReaderSession, didInvalidateWithError error: Error) {
-        print("NFC writer session error: \(error.localizedDescription)")
-        onError?(error)
-    }
+        case .readOnly:
+          session.invalidate(errorMessage: "Il tag è in sola lettura.")
 
-    public func readerSessionDidBecomeActive(_ session: NFCNDEFReaderSession) {
-        
-    }
-
-    public func readerSession(_ session: NFCNDEFReaderSession, didDetect tags: [NFCNDEFTag]) {
-        if tags.count > 1 {
-            let retryInterval = DispatchTimeInterval.milliseconds(500)
-            session.alertMessage = "More than one tag detected. Please try again."
-            DispatchQueue.global().asyncAfter(deadline: .now() + retryInterval) {
-                session.restartPolling()
-            }
+        case .readWrite:
+          guard let message = self.messageToWrite else {
+            session.invalidate(errorMessage: "Nessun messaggio da scrivere.")
             return
-        }
+          }
 
-        guard let tag = tags.first else { return }
-
-        session.connect(to: tag) { (error) in
+          tag.writeNDEF(message) { error in
             if let error = error {
-                session.invalidate(errorMessage: "Unable to connect to tag.")
-                self.onError?(error)
-                return
+              session.invalidate(errorMessage: "Scrittura del messaggio NDEF fallita.")
+              self.onError?(error)
+              return
             }
 
-            tag.queryNDEFStatus { (ndefStatus, capacity, error) in
-                if let error = error {
-                    session.invalidate(errorMessage: "Unable to query the NDEF status of tag.")
-                    self.onError?(error)
-                    return
-                }
+            session.alertMessage = "Messaggio NDEF scritto con successo."
+            session.invalidate()
+            self.onWriteSuccess?()
+          }
 
-                switch ndefStatus {
-                case .notSupported:
-                    session.invalidate(errorMessage: "Tag is not NDEF compliant.")
-                case .readOnly:
-                    session.invalidate(errorMessage: "Tag is read-only.")
-                case .readWrite:
-                    if let message = self.messageToWrite {
-                        tag.writeNDEF(message) { (error) in
-                            if let error = error {
-                                session.invalidate(errorMessage: "Failed to write NDEF message.")
-                                self.onError?(error)
-                                return
-                            }
-                            session.alertMessage = "NDEF message written successfully."
-                            session.invalidate()
-                            self.onWriteSuccess?()
-                        }
-                    } else {
-                        session.invalidate(errorMessage: "No message to write.")
-                    }
-                @unknown default:
-                    session.invalidate(errorMessage: "Unknown NDEF tag status.")
-                }
-            }
+        @unknown default:
+          session.invalidate(errorMessage: "Stato NDEF sconosciuto.")
         }
+      }
     }
+  }
 }
